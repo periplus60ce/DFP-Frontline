@@ -102,41 +102,61 @@ function buildResultsPayload(avgPercent, points) {
 
 // Post to Apps Script (text/plain to avoid preflight)
 async function postToSheets(payload) {
+  const body = JSON.stringify(payload);
+
+  // 1) Best: sendBeacon (no CORS, works during unload)
+  try {
+    if (navigator.sendBeacon) {
+      const ok = navigator.sendBeacon(
+        WEBHOOK_URL,
+        new Blob([body], { type: 'text/plain;charset=utf-8' })
+      );
+      if (ok) return true; // delivered to the browser stack
+    }
+  } catch (_) {}
+
+  // 2) Next best: fetch with no-cors (opaque; we can’t read status)
+  try {
+    await fetch(WEBHOOK_URL, {
+      method: 'POST',
+      // IMPORTANT: no custom headers except a "simple" Content-Type
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body,
+      mode: 'no-cors',     // <- bypasses CORS checks
+      keepalive: true      // helps on page unloads
+    });
+    return true; // treat as success; response is opaque by design
+  } catch (e) {
+    console.warn('no-cors fetch failed:', e);
+  }
+
+  // 3) (Optional) Last resort: try a normal CORS fetch (often blocked by GAS)
   try {
     const res = await fetch(WEBHOOK_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(payload)
+      body
+      // mode defaults to 'cors'
     });
     return res.ok;
   } catch (e) {
-    try {
-      if (navigator.sendBeacon) {
-        const blob = new Blob([JSON.stringify(payload)], { type: 'text/plain' });
-        return navigator.sendBeacon(WEBHOOK_URL, blob);
-      }
-    } catch(_){}
+    console.warn('cors fetch failed:', e);
     return false;
   }
 }
 
-// Submit button handler with success/failure UI
-let lastAvg = null;     // final percentage (0–100)
-let lastPoints = null;  // points out of 5000
-function isValidWebhook(url){
-  // Matches typical Apps Script web app URL ending in /exec (deployment ID is the long token)
-  return /^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/.test(url);
-}
+// Helper to show a friendly result even for opaque deliveries
 async function submitResults() {
   const btn = document.getElementById('submitResultsBtn');
   const status = document.getElementById('submitStatus');
   if (!btn || lastAvg === null || lastPoints === null) return;
 
-  if (!isValidWebhook(WEBHOOK_URL)) {
+  // basic sanity check for the URL format
+  const valid = /^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/.test(WEBHOOK_URL);
+  if (!valid) {
     alert(lang === 'uk'
       ? 'WEBHOOK_URL виглядає некоректним. Переконайтеся, що це Web App URL і закінчується на /exec.'
       : 'WEBHOOK_URL looks invalid. Ensure it is a Web App URL ending with /exec.');
-    console.warn('WEBHOOK_URL at runtime:', WEBHOOK_URL);
     return;
   }
 
@@ -149,6 +169,7 @@ async function submitResults() {
 
   const ok = await postToSheets(buildResultsPayload(lastAvg, lastPoints));
 
+  // NOTE: for sendBeacon/no-cors we treat delivery as success (green).
   status.style.color = ok ? 'lime' : 'tomato';
   status.textContent = ok ? t('submitOK') : t('submitFail');
 
@@ -973,4 +994,5 @@ async function submitResults() {
 </script>
 </body>
 </html>
+
 
