@@ -71,34 +71,23 @@ const WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbzTWQPDB-Qx5CUGbTrN
 
 // Build a detailed payload
 function buildResultsPayload(avgPercent, points) {
-	  const scenarios_count = scenarios.length;
-	  const perScenario = scenarios.map(s => {
-		const selected = isBilingual(s)
-		  ? Array.from(s._selectedIds || [])
-		  : Array.from(s._selectedTexts || []);
-		const correct = isBilingual(s)
-		  ? Array.from(s.correctIds || [])
-		  : Array.from(s.correct || []);
-		return { id: s.id || null, selected, correct };
-	  });
+  const scenarios_count = scenarios.length;
+  const client = getClientInfo();
 
-	  const client = getClientInfo();
-
-	  return {
-		call_sign: callSignValue || '',
-		lang,
-		final_percent: Number(avgPercent.toFixed(1)),
-		final_points: points,
-		scenarios_count,
-		device_type: client.device_type,
-		os: client.os,
-		browser: client.browser,
-		user_agent: client.user_agent,
-		screen_resolution: client.screen_resolution, // NEW
-		timezone_offset: client.timezone_offset,     // NEW
-		perScenario
-	  };
-	}
+  return {
+    call_sign: callSignValue || '',
+    lang,
+    final_percent: Number(avgPercent.toFixed(1)),
+    final_points: points,
+    scenarios_count,
+    device_type: client.device_type,
+    os: client.os,
+    browser: client.browser,
+    user_agent: client.user_agent,
+    screen_resolution: client.screen_resolution,
+    timezone_offset: client.timezone_offset
+  };
+}
 
 // Post to Apps Script (text/plain to avoid preflight)
 async function postToSheets(payload) {
@@ -994,6 +983,7 @@ async function submitResults() {
 </script>
 </body>
 </html>
+
 
 
 
