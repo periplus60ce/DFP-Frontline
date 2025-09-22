@@ -1,0 +1,970 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title data-i18n="title">Виклик Цифрового Захисту</title>
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    .language-switch { position: fixed; top: 12px; right: 12px; z-index: 10; display:flex; gap:8px; }
+    .language-switch button { cursor: pointer; padding: 6px 10px; border-radius: 8px; border: 1px solid #00f6ff; background: rgba(0,0,0,0.6); color: #fff; }
+    .language-switch button.active { background: #00f6ff; color:#000; }
+    .welcome { max-width: 900px; margin: 70px auto 24px; background: rgba(0,0,0,0.6); border: 1px solid #00f6ff; border-radius: 10px; padding: 16px; color: #fff; }
+    .field { margin: 12px 0; }
+    .field input { width: 90%; padding: 10px; border-radius: 8px; border: 1px solid #00f6ff; background: rgba(255,255,255,0.1); color: #fff; }
+    .hint { font-size: 0.9rem; opacity: .9; }
+    .buttons button { margin: 6px; }
+    .submit-btn { margin-top: 10px; padding: 10px 16px; border-radius: 8px; border: 1px solid #00f6ff; background: rgba(0,0,0,0.8); color: #fff; cursor: pointer; }
+    .submit-btn[disabled] { opacity: .5; cursor: not-allowed; }
+    .result-img { max-width: 320px; width: 100%; border-radius: 8px; }
+    .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+    .choice.selected { outline: 2px solid #00f6ff; }
+  </style>
+</head>
+<body>
+
+<!-- Dual-language buttons -->
+<div class="language-switch">
+  <button id="btnUK" type="button" aria-pressed="true">🇺🇦 УКР</button>
+  <button id="btnEN" type="button" aria-pressed="false">🇬🇧 ENG</button>
+</div>
+
+<div class="welcome" id="welcome">
+  <h1 id="welcome-title">Ласкаво просимо до Виклику Цифрового Захисту</h1>
+  <p id="welcome-description-1">
+    Ваш підрозділ ПСО прибув до зони бойових дій. Кожен сценарій містить кіберзагрози, які потрібно нейтралізувати. Обирай правильні заходи. Замало — і ти вразливий. Забагато — втрачаєш ефективність.
+  </p>
+  <p id="welcome-description-2">
+    Кожна правильна дія дає бали. Кожна зайва — мінус 5%. Обирай мудро!
+  </p>
+  <p id="welcome-scoring-note" style="font-weight:600;"></p>
+
+  <!-- Call Sign gate -->
+  <div class="field">
+    <label for="callSign" id="callSignLabel">Позивний</label>
+    <input type="text" id="callSign" placeholder="Введіть позивний" autocomplete="nickname" />
+    <p class="hint" id="callSignHint">Вкажіть позивний, щоб розпочати тест.</p>
+  </div>
+
+  <button class="submit-btn" id="start-button" disabled>Почати Бойове Завдання</button>
+  <div id="liveMessage" class="sr-only" aria-live="polite"></div>
+</div>
+
+<div class="scenario" id="scenarioContainer" style="display:none;"></div>
+<div class="result" id="resultContainer" style="display:none;"></div>
+
+<div id="actionResults" style="display:none; margin: 20px auto; padding: 10px; border: 2px solid #00f6ff; background: rgba(0,0,0,0.8); border-radius: 8px; position: relative; max-width: 700px;">
+  <button onclick='closeActionResults()' style='position: absolute; top: 5px; right: 10px; background: red; color: white; border: none; border-radius: 4px; cursor: pointer;'>X</button>
+  <div id="actionDetails"></div>
+</div>
+
+<div id="threatSummaryBox" style="display:none; margin: 20px auto; padding: 10px; border: 2px solid #ff4d00; background: rgba(0,0,0,0.85); border-radius: 8px; position: relative; max-width: 700px;">
+  <button onclick='closeThreatSummary()' style='position: absolute; top: 5px; right: 10px; background: red; color: white; border: none; border-radius: 4px; cursor: pointer;'>X</button>
+  <div id="threatSummary"></div>
+</div>
+
+<div class="final-result" id="finalContainer" style="display:none;"></div>
+
+<script>
+// === WEBHOOK CONFIG ===
+const WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbwj6EDgZMR5CY156oVuROLsXb0NRbXImRHMFrb6wlnHxKsWbhKZlS0CcqUQgI8Rfyekjw/exec';
+
+// Build a detailed payload
+function buildResultsPayload(avgPercent, points) {
+	  const scenarios_count = scenarios.length;
+	  const perScenario = scenarios.map(s => {
+		const selected = isBilingual(s)
+		  ? Array.from(s._selectedIds || [])
+		  : Array.from(s._selectedTexts || []);
+		const correct = isBilingual(s)
+		  ? Array.from(s.correctIds || [])
+		  : Array.from(s.correct || []);
+		return { id: s.id || null, selected, correct };
+	  });
+
+	  const client = getClientInfo();
+
+	  return {
+		call_sign: callSignValue || '',
+		lang,
+		final_percent: Number(avgPercent.toFixed(1)),
+		final_points: points,
+		scenarios_count,
+		device_type: client.device_type,
+		os: client.os,
+		browser: client.browser,
+		user_agent: client.user_agent,
+		screen_resolution: client.screen_resolution, // NEW
+		timezone_offset: client.timezone_offset,     // NEW
+		perScenario
+	  };
+	}
+
+// Post to Apps Script (text/plain to avoid preflight)
+async function postToSheets(payload) {
+  try {
+    const res = await fetch(WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload)
+    });
+    return res.ok;
+  } catch (e) {
+    try {
+      if (navigator.sendBeacon) {
+        const blob = new Blob([JSON.stringify(payload)], { type: 'text/plain' });
+        return navigator.sendBeacon(WEBHOOK_URL, blob);
+      }
+    } catch(_){}
+    return false;
+  }
+}
+
+// Submit button handler with success/failure UI
+let lastAvg = null;     // final percentage (0–100)
+let lastPoints = null;  // points out of 5000
+async function submitResults() {
+  const btn = document.getElementById('submitResultsBtn');
+  const status = document.getElementById('submitStatus');
+  if (!btn || lastAvg === null || lastPoints === null) return;
+
+  if ((WEBHOOK_URL || '').includes('AKfycbwj6EDgZMR5CY156oVuROLsXb0NRbXImRHMFrb6wlnHxKsWbhKZlS0CcqUQgI8Rfyekjw')) {
+    alert((lang === 'uk')
+      ? 'Будь ласка, вставте справжній Web App URL Apps Script у WEBHOOK_URL.'
+      : 'Please paste your real Apps Script Web App URL into WEBHOOK_URL.');
+    return;
+  }
+
+  btn.disabled = true;
+  const original = btn.textContent;
+  btn.textContent = t('submitting');
+  status.textContent = '';
+  status.style.marginTop = '8px';
+  status.style.fontWeight = '600';
+
+  const ok = await postToSheets(buildResultsPayload(lastAvg, lastPoints));
+
+  status.style.color = ok ? 'lime' : 'tomato';
+  status.textContent = ok ? t('submitOK') : t('submitFail');
+
+  btn.disabled = false;
+  btn.textContent = original;
+}
+</script>
+
+<script>
+  // ===== i18n dictionary (UI chrome only) =====
+  const I18N = {
+    uk: {
+      title: "Виклик Цифрового Захисту",
+      welcomeTitle: "Ласкаво просимо до Виклику Цифрового Захисту",
+      welcome1: "Ваш підрозділ ПСО прибув до зони бойових дій. Кожен сценарій містить кіберзагрози, які потрібно нейтралізувати. Обирай правильні заходи. Замало — і ти вразливий. Забагато — втрачаєш ефективність.",
+      welcome2: "Кожна правильна дія дає бали. Кожна зайва — мінус 5%. Обирай мудро!",
+      scoringNote: "ПРИМІТКА: Підсумок обчислюється у відсотках і балах. 100% = 5000 балів.",
+      totalPointsLabel: "Загальні бали",
+      outOf5000: "з 5000",
+      callSignLabel: "Позивний",
+      callSignPh: "Введіть позивний",
+      callSignHint: "Вкажіть позивний, щоб розпочати тест.",
+      start: "Почати Бойове Завдання",
+      submit: "Підтвердити",
+      threatSummary: "ПІДСУМОК ЗАГРОЗ",
+      scenarioResult: (n) => `Результат сценарію ${n}`,
+      yourScore: "Ваш результат",
+      correct: "Правильних",
+      excess: "Зайвих",
+      missed: "Пропущено",
+      viewActions: "Переглянути дії",
+      nextScenario: "Наступний сценарій",
+      showSummary: "Показати підсумок",
+      finalResult: "Підсумковий результат",
+      submitResultsLabel: "Надіслати результати",
+      submitting: "Надсилання…",
+      submitOK: "Результати надіслано успішно.",
+      submitFail: "Помилка надсилання результатів.",
+      levels: [
+        {min: 90, msg: "Ви надзвичайно захищені. Рівень — Цифровий Замок!", img: "digcastle.jpg"},
+        {min: 80, msg: "Ви у безпеці. Рівень — Цифрова Фортеця", img: "digfort.jpg"},
+        {min: 70, msg: "Безпека на межі. Рівень — Колючий дріт", img: "digbarb.img"},
+        {min: 0,  msg: "Ви вразливі. Необхідно вивчити DFP. Рівень — Легка мішень", img: "digduck.jpg"},
+      ],
+      needCallSign: "Введіть позивний, щоб почати.",
+      effective: "Ефективно",
+      unnecessary: "Зайве або непотрібне",
+      missedCritical: "Пропущено критичний захід",
+      startMission: "Почати Бойове Завдання",
+    },
+    en: {
+      title: "Digital Force Protection Challenge",
+      welcomeTitle: "Welcome to the Digital Force Protection Challenge",
+      welcome1: "Your PSYOP team just entered an active area. Each scenario contains cyber threats. Choose the right actions. Too few — you’re vulnerable. Too many — you lose efficiency.",
+      welcome2: "Each correct action awards points. Each extra action is −5%. Choose wisely!",
+      scoringNote: "NOTE: Final score is both percentage and points. 100% = 5000 points.",
+      totalPointsLabel: "Total Points",
+      outOf5000: "out of 5000",
+      callSignLabel: "Call Sign",
+      callSignPh: "Enter your call sign",
+      callSignHint: "Provide a call sign before starting.",
+      start: "Start Mission",
+      submit: "Submit",
+      threatSummary: "THREAT SUMMARY",
+      scenarioResult: (n) => `Scenario Result ${n}`,
+      yourScore: "Your Score",
+      correct: "Correct",
+      excess: "Excess",
+      missed: "Missed",
+      viewActions: "View Actions",
+      nextScenario: "Next Scenario",
+      showSummary: "Show Final Summary",
+      finalResult: "Final Result",
+      submitResultsLabel: "Submit Results",
+      submitting: "Submitting…",
+      submitOK: "Results submitted successfully.",
+      submitFail: "Submission failed.",
+      levels: [
+        {min: 90, msg: "You are highly protected. Level — Digital Citadel!", img: "digcastle.jpg"},
+        {min: 80, msg: "You’re safe. Level — Digital Fortress", img: "digfort.jpg"},
+        {min: 70, msg: "Borderline security. Level — Barbed Wire", img: "digbarb.jpg"},
+        {min: 0,  msg: "You’re vulnerable. Study DFP. Level — Easy Target", img: "digduck.jpg"},
+      ],
+      needCallSign: "Enter your call sign to begin.",
+      effective: "Effective",
+      unnecessary: "Unnecessary or extra",
+      missedCritical: "Missed critical action",
+      startMission: "Start Mission",
+    }
+  };
+
+  // ===== State =====
+  let lang = (localStorage.getItem("dfp_lang") || document.documentElement.lang || "uk").toLowerCase();
+  let callSignValue = localStorage.getItem("dfp_callsign") || "";
+  let scenarioContainer, resultContainer, finalContainer, actionDetails, threatSummary;
+  let currentScenario = 0;
+  let totalScore = 0; // sum of per-scenario percentages
+
+  // ===== Scenarios =====
+  // Leave empty; you will paste your bilingual scenarios here.
+  const scenarios = [
+    // SCENARIO 0 — bilingual example
+    {
+      id: "friendly-gatekeeper",
+      text: {
+        uk: "Привітний Вартовий: По прибуттю групу ПСО зустрічає балакучий місцевий господар, який пропонує допомогу з Wi-Fi...",
+        en: "Friendly Gatekeeper: On arrival, a chatty local host offers to help with Wi-Fi. The router sits openly in the hallway. The host seems overly curious and lingers while configuring. Across the street, a civilian car with a dark windshield shows occasional phone flashes."
+      },
+      choices: [
+        { id: "field-router", uk: "Використати польовий роутер", en: "Use a field router" },
+        { id: "rf-scan", uk: "Провести RF-сканування", en: "Perform an RF scan" },
+        { id: "auto-join-off", uk: "Вимкнути автопідключення", en: "Disable auto-join" },
+        { id: "mac-rand", uk: "Рандомізація MAC-адреси", en: "Randomize MAC address" },
+        { id: "move-router-inside", uk: "Розмістити роутер у захищеному внутрішньому приміщенні", en: "Place router in a protected interior room" },
+        { id: "enable-bt", uk: "Увімкнути Bluetooth", en: "Enable Bluetooth" },
+        { id: "local-discord", uk: "Приєднатись до місцевого Discord", en: "Join the local Discord" },
+        { id: "keep-ssid", uk: "Прийняти стандартну назву Wi-Fi", en: "Keep the default SSID" },
+        { id: "grant-selective", uk: "Надати доступ до мережі обраним особам", en: "Give network access to selected locals" }
+      ],
+      correctIds: ["field-router","rf-scan","auto-join-off","mac-rand","move-router-inside"],
+      threat: {
+        uk: "Ймовірна шкідлива точка доступу або скомпрометований роутер. Ризики MITM, перехоплення пакетів, підміна DNS, трекінг за MAC тощо.",
+        en: "Likely rogue AP or compromised router. Risks include MITM, packet capture, DNS spoofing, and device tracking via MAC."
+      },
+      // runtime UI state per scenario
+      _selectedIds: new Set()
+    },
+// SCENARIO 1 — Starlink (bilingual)
+	{
+	  id: "starlink-heat",
+	  text: {
+		uk: "Погляди в Небо: Тарілка Starlink перезавантажується час від часу. Поруч стоїть кілька місцевих із телефонами. Керівник групи помічає, що в мережі нещодавно з’явилось теплове відео з атаками на подібні тарілки.",
+		en: "Eyes to the Sky: The Starlink dish reboots from time to time. Several locals with phones are nearby. The team lead notes recent thermal footage online showing attacks against similar dishes."
+	  },
+	  choices: [
+		{ id: "camouflage-dish",        uk: "Замаскувати термінал Starlink сіткою або камуфляжем", en: "Camouflage the Starlink terminal with netting/camouflage" },
+		{ id: "move-indoor-attic",      uk: "Розмістити термінал всередині будівлі або на горищі",  en: "Place the terminal indoors or in an attic" },
+		{ id: "use-ups",                uk: "Використовувати UPS (джерело безперебійного живлення)", en: "Use a UPS (backup power)" },
+		{ id: "rf-scan-interference",   uk: "Провести RF-сканування на наявність завад або перешкод", en: "Perform an RF scan for interference/jamming" },
+		{ id: "limit-lan-firewall-mac", uk: "Обмежити LAN-доступ до Starlink за допомогою фаєрволу або правил MAC", en: "Restrict LAN access to Starlink via firewall/MAC rules" },
+		{ id: "router-vpn-all-traffic", uk: "Маршрутизувати весь вихідний трафік через VPN на рівні роутера",          en: "Route all outbound traffic through a router-level VPN" },
+
+		{ id: "factory-reset",          uk: "Скинути Starlink до заводських налаштувань", en: "Factory-reset the Starlink" },
+		{ id: "post-guard",             uk: "Поставити охоронця біля тарілки",            en: "Post a guard by the dish" },
+		{ id: "sniffers-on-all-lan",    uk: "Встановити сніфери пакетів на всі LAN-пристрої", en: "Install packet sniffers on all LAN devices" },
+		{ id: "enable-bt-tether",       uk: "Активувати Bluetooth-тетеринг",              en: "Enable Bluetooth tethering" },
+		{ id: "disable-fw-updates",     uk: "Вимкнути оновлення прошивки Starlink",       en: "Disable Starlink firmware updates" },
+		{ id: "continuous-thermal",     uk: "Запустити безперервне теплове сканування зсередини будівлі", en: "Run continuous indoor thermal scanning" }
+	  ],
+	  correctIds: [
+		"camouflage-dish","move-indoor-attic","use-ups",
+		"rf-scan-interference","limit-lan-firewall-mac","router-vpn-all-traffic"
+	  ],
+	  threat: {
+		uk: "Фізичне втручання/саботаж терміналу, РЕБ/глушіння супутникового каналу, теплова видимість як тригер для удару, візуальна розвідка місцевими, ризик зламу через неправильну локальну конфігурацію чи LAN-доступ.",
+		en: "Physical tampering/sabotage of the terminal, RF jamming of the satellite link, thermal visibility inviting strikes, local visual recon, and risk of compromise via misconfiguration or LAN access."
+	  },
+	  _selectedIds: new Set()
+	},
+
+	// SCENARIO 2 — Shared Lodging (bilingual)
+	{
+	  id: "shared-lodging",
+	  text: {
+		uk: "Спільне Житло: Орендоване житло має спільну інфраструктуру з хазяїном, що живе на першому поверсі. Хазяїн жартує про «вашу історію переглядів». Через провулок помічають людину, яка регулярно знімає будівлю.",
+		en: "Shared Lodging: The rented house shares network infrastructure with the landlord on the first floor. The landlord jokes about your 'browsing history.' Across the alley, someone is frequently filming the building."
+	  },
+	  choices: [
+		{ id: "router-vpn",         uk: "Використання VPN на рівні маршрутизатора",               en: "Use a router-level VPN" },
+		{ id: "no-shared-net",      uk: "Відмова від використання спільної мережі",               en: "Avoid using the shared network" },
+		{ id: "secure-ap",          uk: "Використання безпечного роутера або точки доступу",      en: "Use a secure router or access point" },
+		{ id: "mac-randomization",  uk: "Увімкнення рандомізації MAC-адрес",                      en: "Enable MAC address randomization" },
+		{ id: "dns-encryption",     uk: "Шифрування DNS трафіку через DoH/DoT",                    en: "Encrypt DNS with DoH/DoT" },
+		{ id: "visual-shielding",   uk: "Приховати внутрішній простір за допомогою щільних штор або теплового фільму", en: "Visually/thermally shield rooms (curtains/film)" },
+		{ id: "wifi-audit",         uk: "Сканування Wi-Fi на предмет неавторизованих пристроїв",  en: "Scan Wi-Fi for unauthorized devices" },
+		{ id: "vlan-isolation",     uk: "Ізоляція пристроїв через VLAN або фільтрація при використанні власного роутера", en: "Isolate devices via VLAN/filtering on your router" },
+
+		{ id: "rewire-building",    uk: "Зміна всієї проводки в будівлі",                         en: "Rewire the entire building" },
+		{ id: "bribe-landlord",     uk: "Підкуп хазяїна, щоб він не ліз у мережу",                 en: "Bribe the landlord to stay out of the network" },
+		{ id: "jam-neighbor-wifi",  uk: "Встановити глушилки для сусідського Wi-Fi",              en: "Jam the neighbor’s Wi-Fi" },
+		{ id: "reset-landlord-rtr", uk: "Скинути маршрутизатор хазяїна",                           en: "Reset the landlord’s router" },
+		{ id: "reconfigure-cctv",   uk: "Переналаштувати камери спостереження сусідів",           en: "Reconfigure neighbors’ CCTV" },
+		{ id: "rotate-housing",     uk: "Ротація до нового будинку кожні 24 години",              en: "Rotate to a new house every 24 hours" }
+	  ],
+	  correctIds: [
+		"router-vpn","no-shared-net","secure-ap","mac-randomization",
+		"dns-encryption","visual-shielding","wifi-audit","vlan-isolation"
+	  ],
+	  threat: {
+		uk: "Спільна мережа = скомпрометований периметр: орендодавець бачить трафік/метадані. Відсутність сегментації підвищує ризик прослуховування та ін’єкцій. Зовнішнє спостереження сприяє ідентифікації. Повний доступ адміністратора дозволяє підміну DNS, логування, бекдори.",
+		en: "Shared network = compromised perimeter: landlord sees traffic/metadata. Lack of segmentation enables eavesdropping/injection. External observation aids identification. Admin access enables DNS spoofing, logging, backdoors."
+	  },
+	  _selectedIds: new Set()
+	},
+
+	// SCENARIO 3 — Casino Royale (bilingual)
+	{
+	  id: "casino-royale",
+	  text: {
+		uk: "Казино Рояль: У вільний час боєць ПСО відвідує місцевий гральний заклад і підключається до відкритої Wi-Fi мережі. Через кілька днів у мережі підрозділу виникають аномалії DNS. У Telegram з’являється відео з цим бійцем у барі.",
+		en: "Casino Royale: Off-duty, a PSYOP soldier visits a local gambling venue and joins an open Wi-Fi network. Days later, unit DNS anomalies appear. A video surfaces on Telegram showing the soldier at the bar."
+	  },
+	  choices: [
+		{ id: "separate-devices",   uk: "Використання окремих пристроїв для дозвілля або розвідки", en: "Use separate devices for leisure or recon" },
+		{ id: "isolate-compromised",uk: "Ізоляція та аналіз скомпрометованого пристрою",           en: "Isolate and analyze the compromised device" },
+		{ id: "ban-unauth-nets",    uk: "Заборона підключення до неавторизованих мереж",           en: "Ban connections to unauthorized networks" },
+		{ id: "rotate-identifiers", uk: "Регулярна ротація MAC-адрес і ідентифікаторів пристроїв", en: "Regularly rotate MAC and device identifiers" },
+		{ id: "osint-leaks",        uk: "OSINT-перевірка на витік контенту",                        en: "OSINT sweep for content leaks" },
+		{ id: "wipe-reflash",       uk: "Повне очищення або перепрошивка пристрою",                en: "Full wipe or reflash the device" },
+		{ id: "dns-blocking",       uk: "DNS-блокування через Pi-hole або інші засоби",            en: "DNS blocking (Pi-hole or similar)" },
+
+		{ id: "confiscate-all-wifi",uk: "Конфіскація та перевірка всіх місцевих Wi-Fi мереж",      en: "Confiscate and audit all local Wi-Fi" },
+		{ id: "disable-wifi-forever",uk:"Назавжди вимкнути Wi-Fi на всіх пристроях",               en: "Disable Wi-Fi on all devices permanently" },
+		{ id: "24-7-capture",       uk: "Цілодобовий захоплення трафіку в локальній мережі",       en: "Capture all LAN traffic 24/7" },
+		{ id: "punish-isolate",     uk: "Покарання або ізоляція особи без коригувальних дій",      en: "Punish/isolate individual with no corrective action" },
+		{ id: "install-spyware",    uk: "Встановлення шпигунського ПЗ на пристрій",               en: "Install spyware on the device" }
+	  ],
+	  correctIds: [
+		"separate-devices","isolate-compromised","ban-unauth-nets",
+		"rotate-identifiers","osint-leaks","wipe-reflash","dns-blocking"
+	  ],
+	  threat: {
+		uk: "Публічний Wi-Fi = MITM, ін’єкції, перехоплення. Пристрій може стати точкою доступу/екcфільтрації. Витік відео створює ризики ОПБ/шантажу; метадані (ім’я хоста, MAC, історія) могли бути зібрані.",
+		en: "Public Wi-Fi enables MITM, injections, interception. Device may become an access point/exfil node. Video leaks pose OPSEC/blackmail risks; metadata (hostname, MAC, history) may be harvested."
+	  },
+	  _selectedIds: new Set()
+	},
+
+	// SCENARIO 4 — Ghost Apps (bilingual)
+	{
+	  id: "ghost-apps",
+	  text: {
+		uk: "Примарні Додатки: Місцевий продавець радить встановити популярний додаток для орієнтування. Член групи вручну ставить APK. За кілька годин з’являється підозріла мережна активність; є GPS-оверлей і запити на доступ.",
+		en: "Ghost Apps: A local vendor suggests a popular navigation app. A team member sideloads an APK. Hours later, suspicious network activity appears; the app overlays GPS and requests excessive permissions."
+	  },
+	  choices: [
+		{ id: "ban-apk",            uk: "Заборонити сторонні APK та дозволити лише офіційні джерела", en: "Ban sideloaded APKs; allow only official stores" },
+		{ id: "use-offline-maps",   uk: "Використання офлайн-карт і навігаційних засобів",           en: "Use offline maps/navigation" },
+		{ id: "isolate-destroy",    uk: "Ізолювати або знищити скомпрометований пристрій",           en: "Isolate or destroy the compromised device" },
+		{ id: "analyze-airgapped",  uk: "Аналізувати APK у повітряно-ізольованому середовищі",       en: "Analyze the APK in an air-gapped lab" },
+		{ id: "block-ip-dns",       uk: "Блокувати підозрілі IP/домен через DNS",                     en: "Block suspicious IP/domains via DNS" },
+		{ id: "rotate-ids-passwords",uk:"Ротація ідентифікаторів пристрою і скидання паролів",      en: "Rotate device IDs and reset passwords" },
+		{ id: "app-audit-logging",  uk: "Журналювання і аудит усіх встановлених додатків",           en: "Log/audit all installed apps" },
+
+		{ id: "ban-all-apps",       uk: "Заборонити всі мобільні додатки",                           en: "Ban all mobile apps" },
+		{ id: "jam-cell",           uk: "Глушити мобільний сигнал у зоні",                           en: "Jam cellular signals" },
+		{ id: "gov-spyware",        uk: "Встановити державне шпигунське ПЗ",                         en: "Install government spyware" },
+		{ id: "wipe-every-phone",   uk: "Очистити всі телефони підрозділу",                          en: "Wipe every unit phone" },
+		{ id: "destroy-shop",       uk: "Фізично знищити магазин продавця",                          en: "Physically destroy the vendor’s shop" }
+	  ],
+	  correctIds: [
+		"ban-apk","use-offline-maps","isolate-destroy",
+		"analyze-airgapped","block-ip-dns","rotate-ids-passwords","app-audit-logging"
+	  ],
+	  threat: {
+		uk: "Сайдлоадинг = високий ризик троянів/бекдорів/маяків. Надмірні дозволи (мікрофон, GPS, камера) та невідомі з’єднання свідчать про C2/ексфільтрацію.",
+		en: "Sideloading = high risk of trojans/backdoors/beacons. Excessive permissions and unknown connections indicate C2/exfiltration."
+	  },
+	  _selectedIds: new Set()
+	},
+
+	// SCENARIO 5 — Massage Metadata (bilingual)
+	{
+	  id: "massage-metadata",
+	  text: {
+		uk: "Метадані Масажу: Двоє бійців відвідують місцевий салон. За два дні на службові телефони приходять фішингові SMS. Один фігурує на відео салону в соцмережах.",
+		en: "Massage Metadata: Two soldiers visit a local salon. Two days later, phishing SMS arrive on duty phones. One soldier appears in the salon’s social media video."
+	  },
+	  choices: [
+		{ id: "ban-unvetted-venues", uk: "Заборонити відвідування неперевірених закладів під час виконання завдання", en: "Ban unvetted venues while on mission" },
+		{ id: "burner-sims",         uk: "Використання телефонів з одноразовими SIM-картами без зв'язку з особою",      en: "Use phones with burner SIMs not tied to identity" },
+		{ id: "rotate-sim-imei",     uk: "Негайна ротація SIM-карт та IMEI пристроїв",                                   en: "Immediately rotate SIMs and device IMEIs" },
+		{ id: "remove-content",      uk: "Видалення компрометованого контенту через офіційні запити або контрзаходи",   en: "Remove compromising content via official takedowns/countermeasures" },
+		{ id: "osint-media-check",   uk: "OSINT-перевірка на фото/відео в мережі та метадані",                           en: "OSINT check for photos/videos and metadata" },
+		{ id: "airplane-faraday",    uk: "Режим польоту + зберігання пристрою в екранованому контейнері поза базою",    en: "Airplane mode + store device in a shielded container off-base" },
+		{ id: "train-privacy",       uk: "Навчання персоналу ризикам прихованого спостереження",                         en: "Train personnel on hidden-surveillance risks" },
+
+		{ id: "confiscate-personal", uk: "Конфіскація всіх особистих телефонів",                                         en: "Confiscate all personal phones" },
+		{ id: "blacklist-all-salons",uk: "Занести до чорного списку всі салони масажу",                                   en: "Blacklist all massage salons" },
+		{ id: "sigint-civilians",    uk: "Перекинути SIGINT на моніторинг цивільних номерів",                             en: "Task SIGINT to monitor civilian numbers" },
+		{ id: "public-punishment",   uk: "Публічне покарання всього підрозділу",                                          en: "Publicly punish the entire unit" },
+		{ id: "ban-all-social",      uk: "Заборонити всі соцмережі на особистих пристроях",                               en: "Ban all social media on personal devices" }
+	  ],
+	  correctIds: [
+		"ban-unvetted-venues","burner-sims","rotate-sim-imei",
+		"remove-content","osint-media-check","airplane-faraday","train-privacy"
+	  ],
+	  threat: {
+		uk: "Цивільні простори = збір номерів/метаданих; таргетований фішинг і поведінковий профайлінг. Публічний контент розкриває особи/місця/час.",
+		en: "Civilian venues = number/metadata collection; targeted phishing and behavioral profiling. Public content reveals identities/places/times."
+	  },
+	  _selectedIds: new Set()
+	},
+
+	// SCENARIO 6 — Tavern (bilingual)
+	{
+	  id: "tavern-deepfake",
+	  text: {
+		uk: "Корчма: Боєць напивається у місцевому барі. Згодом з’являється дипфейк з його антивладними заявами. Відомий колаборант працює в тому ж барі.",
+		en: "Tavern: A soldier gets drunk at a local bar. Soon, a deepfake appears showing anti-government statements. A known collaborator works at the same bar."
+	  },
+	  choices: [
+		{ id: "ban-solo-activity",  uk: "Заборонити несанкціоновану одиночну активність у незахищених зонах", en: "Ban unauthorized solo activity in unsecured areas" },
+		{ id: "public-comms-off",   uk: "Призначити офіцера з публічної комунікації від підрозділу",         en: "Assign a unit public communications officer" },
+		{ id: "deepfake-training",  uk: "Навчити команду ризикам дипфейків",                                  en: "Train the team on deepfake risks" },
+		{ id: "osint-monitoring",   uk: "Моніторити OSINT-джерела та подавати запити на видалення фейків",    en: "Monitor OSINT and file takedown requests" },
+		{ id: "face-obfuscation",   uk: "Використовувати аксесуари проти розпізнавання обличчя поза базою",   en: "Use face-obscuring accessories off-base" },
+		{ id: "counter-narrative",  uk: "Розробити і поширити контрнаратив у разі вірусного розголосу",       en: "Develop and disseminate a counter-narrative if viral" },
+		{ id: "sober-buddy",        uk: "Запровадити протоколи «тверезого напарника» поза службою",           en: "Enforce ‘sober buddy’ protocols off duty" },
+
+		{ id: "total-ban-movement", uk: "Повна заборона пересування поза базою",                              en: "Total ban on movement off-base" },
+		{ id: "bodycams-always",    uk: "Постійні бодікамери для всіх бійців",                                en: "Bodycams for all soldiers at all times" },
+		{ id: "immediate-dismiss",  uk: "Негайне звільнення учасника без перевірки",                          en: "Immediate dismissal without review" },
+		{ id: "psyops-vs-staff",    uk: "Психологічні операції проти персоналу бару",                         en: "Run PSYOP against bar staff" },
+		{ id: "ai-avatar-replace",  uk: "Заміна бійця на аватар, згенерований ШІ",                            en: "Replace soldier with an AI avatar" }
+	  ],
+	  correctIds: [
+		"ban-solo-activity","public-comms-off","deepfake-training",
+		"osint-monitoring","face-obfuscation","counter-narrative","sober-buddy"
+	  ],
+	  threat: {
+		uk: "HUMINT/соцінж: витяг інформації, прихований запис. Дипфейки та візуальні маніпуляції підривають довіру/мораль. Алкоголь = ризик ОПБ.",
+		en: "HUMINT/social engineering: elicitation and covert recording. Deepfakes and visual manipulations erode trust/morale. Alcohol undermines OPSEC."
+	  },
+	  _selectedIds: new Set()
+	},
+
+	// SCENARIO 7 — USB Diplomacy (bilingual)
+	{
+	  id: "usb-diplomacy",
+	  text: {
+		uk: "Дипломатія Флешки: Цивільний пропонує USB з «картами та частотами». Боєць вставляє носій у ноутбук. Згодом фіксують активність бекдора.",
+		en: "USB Diplomacy: A civilian offers a USB stick with 'maps and frequencies.' A soldier plugs it into a laptop. Backdoor activity is later detected."
+	  },
+	  choices: [
+		{ id: "never-plug-unknown", uk: "Ніколи не вставляти неперевірені USB у робочу/офіційну техніку", en: "Never plug unknown USB into operational/official gear" },
+		{ id: "analyze-airgapped",  uk: "**Якщо аналіз необхідний — лише в повітряно ізольованому середовищі", en: "**If analysis is needed—use an air-gapped lab only" },
+		{ id: "usb-data-blockers",  uk: "Використовувати USB-блокатори для захисту та аналізу",             en: "Use USB data blockers for protection/inspection" },
+		{ id: "restore-os-image",   uk: "Відновлення пристрою перевіреним образом ОС",                      en: "Restore device from a trusted OS image" },
+		{ id: "isolate-or-sacrifice",uk:"Ізолювати або знищити пристрій, або перетворити його на пастку",  en: "Isolate/destroy device or convert to a honeypot" },
+		{ id: "edr-usb-monitoring", uk: "Використовувати EDR/антивіруси для моніторингу USB-подій",         en: "Use EDR/AV to monitor USB events" },
+		{ id: "train-usb-se",       uk: "Навчити команду соціальній інженерії через USB",                   en: "Train the team on USB-based social engineering" },
+
+		{ id: "destroy-all-usb",    uk: "Фізично знищити всі USB в регіоні",                                en: "Physically destroy all USB in the region" },
+		{ id: "ban-digital-maps",   uk: "Заборонити цифрові карти",                                         en: "Ban digital maps" },
+		{ id: "full-scan-daily",    uk: "Обов’язкове повне сканування пристроїв щодня",                     en: "Mandatory full device scans daily" },
+		{ id: "interrogate-civil",  uk: "Допитати цивільного",                                              en: "Interrogate the civilian" },
+		{ id: "disable-all-usb",    uk: "Назавжди вимкнути всі USB порти",                                  en: "Permanently disable all USB ports" }
+	  ],
+	  correctIds: [
+		"never-plug-unknown","analyze-airgapped","usb-data-blockers",
+		"restore-os-image","isolate-or-sacrifice","edr-usb-monitoring","train-usb-se"
+	  ],
+	  threat: {
+		uk: "USB з ненадійних джерел = BadUSB/прошивкові атаки/скрипти. Ризик підвищення привілеїв, бекдорів, ексфільтрації, подолання повітряного зазору.",
+		en: "Untrusted USB = BadUSB/firmware/scripted attacks. Risks include privilege escalation, backdoors, exfiltration, and air-gap bypass."
+	  },
+	  _selectedIds: new Set()
+	},
+
+	// SCENARIO 8 — Landlord Logs Everything (bilingual)
+	{
+	  id: "landlord-logs",
+	  text: {
+		uk: "Орендодавець Все Логує: Хазяїн натякає, що знає MAC-адреси, часові мітки та історію переглядів підрозділу. Під полицею знаходять приховану камеру GoPro.",
+		en: "Landlord Logs Everything: The landlord hints he knows unit MAC addresses, timestamps, and browsing history. A hidden GoPro camera is found under a shelf."
+	  },
+	  choices: [
+		{ id: "independent-ap",     uk: "Використання незалежної, зашифрованої точки доступу або мобільного роутера", en: "Use an independent, encrypted AP or mobile router" },
+		{ id: "mac-rand-all",       uk: "Рандомізація MAC-адрес для всіх пристроїв",                                en: "Randomize MAC addresses on all devices" },
+		{ id: "dns-encrypt",        uk: "DNS-шифрування через DoH або DoT",                                         en: "Encrypt DNS via DoH/DoT" },
+		{ id: "full-sweep-bugs",    uk: "Повний технічний огляд на наявність прослуховування",                      en: "Full TSCM sweep for bugs/cameras" },
+		{ id: "thermal-visual-mask",uk: "Теплове/візуальне екранування приміщення",                                 en: "Thermal/visual shielding of rooms" },
+		{ id: "vlan-segmentation",  uk: "VLAN та ізоляція трафіку між пристроями",                                   en: "VLAN segmentation and device isolation" },
+		{ id: "post-incident-audit",uk: "Аудит логів і аналіз трафіку після компрометації",                         en: "Post-incident log and traffic audit" },
+
+		{ id: "destroy-landlord-rtr",uk:"Фізичне знищення роутера орендодавця",                                     en: "Physically destroy the landlord’s router" },
+		{ id: "police-report-now",  uk: "Подати кримінальну заяву під час завдання",                                en: "File a criminal report during the mission" },
+		{ id: "bug-their-flat",     uk: "Встановити прослушку у квартирі орендодавця",                              en: "Bug the landlord’s apartment" },
+		{ id: "move-immediately",   uk: "Змінити житло негайно",                                                    en: "Move house immediately" },
+		{ id: "24-7-watch",         uk: "Виділити чергового спостерігача 24/7",                                     en: "Assign a 24/7 watcher" },
+		{ id: "ban-internal-traffic",uk:"Заборонити внутрішній обмін даними між пристроями",                         en: "Ban all internal device traffic" }
+	  ],
+	  correctIds: [
+		"independent-ap","mac-rand-all","dns-encrypt",
+		"full-sweep-bugs","thermal-visual-mask","vlan-segmentation","post-incident-audit"
+	  ],
+	  threat: {
+		uk: "Мережеве спостереження, збір метаданих (DNS, MAC, патерни). Приховані камери = SIGINT/OSINT ризики. Можливі підміни/бекдори адміном.",
+		en: "Network surveillance, metadata capture (DNS, MAC, patterns). Hidden cameras = SIGINT/OSINT risks. Admin may inject/spoof or add backdoors."
+	  },
+	  _selectedIds: new Set()
+	},
+
+	// SCENARIO 9 — Hackers for Hire (bilingual)
+	{
+	  id: "hackers-for-hire",
+	  text: {
+		uk: "Місцеві Хакери на Замовлення: Поряд інтернет-кафе, де молоді хакери хизуються атаками на польські сервери. Їхній Wi-Fi видно з будинку; пасивне сканування показує Wireshark у підмережі.",
+		en: "Hackers for Hire: Nearby is an internet café where young hackers boast of attacks on Polish servers. Their Wi-Fi reaches your house; passive scanning shows Wireshark in the subnet."
+	  },
+	  choices: [
+		{ id: "segment-limit-egress", uk: "Сегментація мережі та обмеження вихідного трафіку", en: "Segment the network and limit egress" },
+		{ id: "disable-discovery",    uk: "Вимкнення служб виявлення — mDNS, SSDP, NetBIOS тощо", en: "Disable discovery services—mDNS, SSDP, NetBIOS, etc." },
+		{ id: "mac-hide-ssid-static", uk: "Рандомізація MAC, прихований SSID, статичні IP",      en: "MAC randomization, hidden SSID, static IPs" },
+		{ id: "regular-rf-scans",     uk: "Регулярні RF-сканування на наявність підозрілих точок доступу", en: "Regular RF scans for suspicious APs" },
+		{ id: "shrink-wifi-radius",   uk: "Обмеження радіусу дії Wi-Fi до приміщення",          en: "Shrink Wi-Fi coverage to the premises" },
+		{ id: "passive-observe",      uk: "Пасивне спостереження за інфраструктурою кафе без втручання", en: "Passively observe the café’s infrastructure" },
+		{ id: "train-near-threats",   uk: "Навчання персоналу роботі в умовах загроз поруч",     en: "Train staff to operate with nearby threats" },
+
+		{ id: "counter-hack",         uk: "Запустити кібератаку у відповідь",                    en: "Launch a counter-hack" },
+		{ id: "destroy-cafe",         uk: "Знищити роутер або будівлю кафе",                     en: "Destroy the café’s router/building" },
+		{ id: "permanent-jamming",    uk: "Глушити їхній сигнал постійно",                       en: "Permanently jam their signal" },
+		{ id: "evacuate-now",         uk: "Негайно залишити будинок",                            en: "Evacuate immediately" },
+		{ id: "label-all-hostile",    uk: "Вважати всіх цивільних агентами противника",          en: "Assume all civilians are enemy agents" },
+		{ id: "go-offline-only",      uk: "Перейти повністю на офлайн-засоби",                   en: "Go fully offline" }
+	  ],
+	  correctIds: [
+		"segment-limit-egress","disable-discovery","mac-hide-ssid-static",
+		"regular-rf-scans","shrink-wifi-radius","passive-observe","train-near-threats"
+	  ],
+	  threat: {
+		uk: "Близька присутність противника підвищує ризик пасивного/активного перехоплення, підроблених SSID, ін’єкцій трафіку і розвідки випромінювань.",
+		en: "Adversaries nearby increase risks of passive/active capture, rogue SSIDs, traffic injection, and emissions intelligence."
+	  },
+	  _selectedIds: new Set()
+	}
+];
+
+
+  // ===== Utilities =====
+  const $ = (sel) => document.querySelector(sel);
+
+  function t(key, ...args){
+    const M = I18N[lang];
+    const val = M[key];
+    return typeof val === "function" ? val(...args) : val;
+  }
+
+  function applyLang(){
+    document.documentElement.lang = lang;
+    localStorage.setItem("dfp_lang", lang);
+
+    // Update static texts
+    document.title = t("title");
+    $('[data-i18n="title"]')?.setAttribute("content", t("title"));
+    $('#welcome-title').textContent = t("welcomeTitle");
+    $('#welcome-description-1').textContent = t("welcome1");
+    $('#welcome-description-2').textContent = t("welcome2");
+    $('#welcome-scoring-note').textContent = t("scoringNote");
+
+    $('#callSignLabel').textContent = t("callSignLabel");
+    $('#callSign').placeholder = t("callSignPh");
+    $('#callSignHint').textContent = t("callSignHint");
+    $('#start-button').textContent = t("start");
+
+    // Header buttons
+    $('#btnUK').classList.toggle('active', lang === 'uk');
+    $('#btnUK').setAttribute('aria-pressed', lang === 'uk' ? 'true' : 'false');
+    $('#btnEN').classList.toggle('active', lang === 'en');
+    $('#btnEN').setAttribute('aria-pressed', lang === 'en' ? 'true' : 'false');
+
+    // Live re-render current view to update scenario/result language
+    render();
+  }
+
+  function shuffleArray(array) {
+    for (let i = array.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [array[i], array[j]] = [array[j], array[i]];
+    }
+  }
+
+  function shuffleCopy(arr){
+    const a = arr.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+  }
+
+  // ===== Rendering controller =====
+  let view = "welcome"; // 'welcome' | 'scenario' | 'result' | 'final'
+
+  function render(){
+    if (view === "welcome"){
+      $('#welcome').style.display = "block";
+      $('#scenarioContainer').style.display = "none";
+      $('#resultContainer').style.display = "none";
+      $('#finalContainer').style.display = "none";
+      return;
+    }
+    if (view === "scenario"){
+      showScenario();
+      return;
+    }
+    if (view === "result"){
+      const scoreEl = $('#resultContainer .score');
+      if (scoreEl) {
+        const txt = scoreEl.textContent.replace(/^(Your Score|Ваш результат)/, t("yourScore"));
+        scoreEl.textContent = txt;
+      }
+      $('#resultContainer').style.display = "block";
+      $('#welcome').style.display = "none";
+      $('#scenarioContainer').style.display = "none";
+      $('#finalContainer').style.display = "none";
+      return;
+    }
+    if (view === "final"){
+      $('#finalContainer').style.display = "block";
+      $('#welcome').style.display = "none";
+      $('#scenarioContainer').style.display = "none";
+      $('#resultContainer').style.display = "none";
+      return;
+    }
+  }
+
+  // ===== Game flow =====
+  function startGame() {
+    const input = $('#callSign');
+    const cs = input.value.trim();
+    if (!cs) {
+      $('#liveMessage').textContent = t("needCallSign");
+      return;
+    }
+    if (scenarios.length === 0) {
+      alert(lang === 'uk'
+        ? 'Сценарії відсутні. Додайте сценарії до масиву const scenarios і спробуйте знову.'
+        : 'No scenarios yet. Please paste your scenarios into the const scenarios array and try again.');
+      return;
+    }
+
+    callSignValue = cs;
+    localStorage.setItem("dfp_callsign", callSignValue);
+
+    shuffleArray(scenarios);
+    currentScenario = 0;
+    totalScore = 0;
+
+    // reset per-scenario UI state for a fresh run
+    scenarios.forEach(s => { delete s._order; s._selectedIds = new Set(); s._selectedTexts = new Set(); });
+
+    view = "scenario";
+    $('#welcome').style.display = "none";
+    showScenario();
+  }
+
+  function isBilingual(s) {
+    return typeof s.text === 'object' && s.choices && typeof s.choices[0] === 'object';
+  }
+
+  function getScenarioText(s) {
+    if (isBilingual(s)) return s.text[lang] || s.text.uk || '';
+    return s.text?.uk || s.text || '';
+  }
+
+  function getScenarioThreat(s) {
+    if (isBilingual(s)) return s.threat?.[lang] || s.threat?.uk || "";
+    return s.threat?.uk || s.threat || "";
+  }
+
+  function getChoicesForRender(s) {
+    if (isBilingual(s)) {
+      return s.choices.map(c => ({ id: c.id, label: c[lang] || c.uk }));
+    } else {
+      return (s.choices || []).map(txt => ({ id: txt, label: txt }));
+    }
+  }
+
+  function getCorrectIds(s) {
+    if (isBilingual(s)) return new Set(s.correctIds || []);
+    return new Set(s.correct || []);
+  }
+
+  function showScenario() {
+    view = "scenario";
+    const s = scenarios[currentScenario];
+    const choicesToShow = getChoicesForRender(s); // [{id, label}] in current lang
+    const correctIdSet = getCorrectIds(s);
+
+    const container = scenarioContainer;
+    container.innerHTML = '';
+    resultContainer.style.display = 'none';
+
+    // Map id -> label (current language)
+    const labelById = new Map(choicesToShow.map(c => [c.id, c.label]));
+    const allChoiceIds = choicesToShow.map(c => c.id);
+
+    // Create a persistent shuffled order per scenario for this run
+    if (!Array.isArray(s._order) || s._order.length !== allChoiceIds.length) {
+      s._order = shuffleCopy(allChoiceIds);
+    }
+
+    const scenarioText = document.createElement("h2");
+    scenarioText.textContent = getScenarioText(s);
+
+    const btnGroup = document.createElement("div");
+    btnGroup.className = "buttons";
+
+    // Ensure selection set exists
+    if (isBilingual(s) && !(s._selectedIds instanceof Set)) s._selectedIds = new Set();
+    if (!isBilingual(s) && !(s._selectedTexts instanceof Set)) s._selectedTexts = new Set();
+
+    // Render buttons in the stored shuffled order
+    s._order.forEach((choiceId, index) => {
+      const label = labelById.get(choiceId) || choiceId;
+      const btn = document.createElement("button");
+      btn.className = "choice";
+      btn.textContent = label;
+      btn.dataset.id = choiceId;
+      btn.dataset.index = index;
+
+      const isSelected = isBilingual(s) ? s._selectedIds.has(choiceId)
+                                        : s._selectedTexts.has(label);
+      if (isSelected) btn.classList.add("selected");
+
+      btn.onclick = () => {
+        btn.classList.toggle("selected");
+        const nowSelected = btn.classList.contains("selected");
+        if (isBilingual(s)) {
+          if (nowSelected) s._selectedIds.add(choiceId);
+          else s._selectedIds.delete(choiceId);
+        } else {
+          if (nowSelected) s._selectedTexts.add(label);
+          else s._selectedTexts.delete(label);
+        }
+      };
+
+      btnGroup.appendChild(btn);
+    });
+
+    const submitBtn = document.createElement("button");
+    submitBtn.textContent = t("submit");
+    submitBtn.className = "submit-btn";
+    submitBtn.onclick = function () { evaluateAnswer(s, choicesToShow, correctIdSet); };
+
+    const threatBtn = document.createElement("button");
+    threatBtn.textContent = t("threatSummary");
+    threatBtn.className = "submit-btn";
+    threatBtn.onclick = function () { showThreatSummary(getScenarioThreat(s)); };
+
+    container.appendChild(scenarioText);
+    container.appendChild(btnGroup);
+    container.appendChild(submitBtn);
+    container.appendChild(threatBtn);
+    container.style.display = "block";
+
+    $('#welcome').style.display = "none";
+    $('#finalContainer').style.display = "none";
+  }
+
+  function showThreatSummary(summaryText) {
+    threatSummary.innerHTML = `<p>${summaryText}</p>`;
+    document.getElementById("threatSummaryBox").style.display = "block";
+  }
+  function closeThreatSummary() {
+    document.getElementById("threatSummaryBox").style.display = "none";
+  }
+
+  function evaluateAnswer(s, renderedChoices, correctIdSet) {
+    let selectedIds = [];
+    if (isBilingual(s)) {
+      selectedIds = Array.from(s._selectedIds);
+    } else {
+      selectedIds = Array.from(s._selectedTexts);
+    }
+
+    const correctCount = selectedIds.filter(id => correctIdSet.has(id)).length;
+    const totalCorrect = correctIdSet.size || 1;
+    const excessCount = selectedIds.filter(id => !correctIdSet.has(id)).length;
+    const missedCount = Math.max(0, totalCorrect - correctCount);
+
+    const score = Math.max(0, ((correctCount / totalCorrect) * 100) - (excessCount * 5));
+    totalScore += score;
+
+    scenarioContainer.style.display = "none";
+
+    let actionSummary = `<ul>`;
+    const labelById = new Map(renderedChoices.map(c => [c.id, c.label]));
+    const displaySelected = selectedIds.map(id => ({ id, label: labelById.get(id) || id }));
+    displaySelected.forEach(item => {
+      if (correctIdSet.has(item.id)) {
+        actionSummary += `<li style='color: lime;'>✅ ${item.label} — ${t("effective")}</li>`;
+      } else {
+        actionSummary += `<li style='color: orange;'>⚠️ ${item.label} — ${t("unnecessary")}</li>`;
+      }
+    });
+
+    Array.from(correctIdSet).forEach(id => {
+      if (!selectedIds.includes(id)) {
+        const label = labelById.get(id) || id;
+        actionSummary += `<li style='color: red;'>❌ ${label} — ${t("missedCritical")}</li>`;
+      }
+    });
+    actionSummary += `</ul>`;
+    actionDetails.innerHTML = actionSummary;
+
+    resultContainer.innerHTML = `
+      <h3>${t("scenarioResult", currentScenario + 1)}</h3>
+      <p class="score">${t("yourScore")}: ${score.toFixed(1)}%</p>
+      <p>${t("correct")}: ${correctCount} / ${totalCorrect}, ${t("excess")}: ${excessCount}, ${t("missed")}: ${missedCount}</p>
+      <button class='submit-btn' onclick='viewActionResults()'>${t("viewActions")}</button>
+    `;
+    resultContainer.style.display = "block";
+
+    currentScenario++;
+    if (currentScenario < scenarios.length) {
+      const nextBtn = document.createElement("button");
+      nextBtn.textContent = t("nextScenario");
+      nextBtn.className = "submit-btn";
+      nextBtn.onclick = () => { view = "scenario"; showScenario(); };
+      resultContainer.appendChild(nextBtn);
+    } else {
+      const finalBtn = document.createElement("button");
+      finalBtn.textContent = t("showSummary");
+      finalBtn.className = "submit-btn";
+      finalBtn.onclick = showFinalResult;
+      resultContainer.appendChild(finalBtn);
+    }
+
+    view = "result";
+  }
+
+  function viewActionResults() {
+    document.getElementById("actionResults").style.display = "block";
+  }
+  function closeActionResults() {
+    document.getElementById("actionResults").style.display = "none";
+  }
+
+  function showFinalResult() {
+    resultContainer.style.display = "none";
+    finalContainer.style.display = "block";
+    const avg = totalScore / scenarios.length;         // percentage (0–100)
+    const points = Math.round((avg / 100) * 5000);     // points
+
+    lastAvg = avg;
+    lastPoints = points;
+
+    const tier = I18N[lang].levels.find(l => avg >= l.min) || I18N[lang].levels[I18N[lang].levels.length - 1];
+    finalContainer.innerHTML = `
+      <h2>${t("finalResult")}: ${avg.toFixed(1)}%</h2>
+      <p><strong>${t("totalPointsLabel")}:</strong> ${points} ${t("outOf5000")}</p>
+      <p>${tier.msg}</p>
+      <img src="${tier.img}" alt="Result" class="result-img" />
+      <div style="margin-top:12px;">
+        <button id="submitResultsBtn" class="submit-btn" type="button">${t('submitResultsLabel')}</button>
+        <div id="submitStatus" aria-live="polite"></div>
+      </div>
+    `;
+
+    const btn = document.getElementById('submitResultsBtn');
+    btn.addEventListener('click', submitResults);
+
+    view = "final";
+  }
+  
+  function getClientInfo() {
+	  const ua = navigator.userAgent || navigator.vendor || window.opera;
+
+	  let device_type = /Mobi|Android/i.test(ua) ? 'Mobile' : 'Desktop';
+
+	  let os = 'Unknown OS';
+	  if (/Windows/i.test(ua)) os = 'Windows';
+	  else if (/Mac OS X/i.test(ua)) os = 'macOS';
+	  else if (/Android/i.test(ua)) os = 'Android';
+	  else if (/iPhone|iPad|iPod/i.test(ua)) os = 'iOS';
+	  else if (/Linux/i.test(ua)) os = 'Linux';
+
+	  let browser = 'Unknown Browser';
+	  if (/Chrome/i.test(ua) && !/Edge/i.test(ua)) browser = 'Chrome';
+	  else if (/Safari/i.test(ua) && !/Chrome/i.test(ua)) browser = 'Safari';
+	  else if (/Firefox/i.test(ua)) browser = 'Firefox';
+	  else if (/Edge/i.test(ua)) browser = 'Edge';
+
+	  const screen_resolution = `${window.screen.width}x${window.screen.height}`;
+	  const timezone_offset = new Date().getTimezoneOffset(); 
+	  // minutes offset from UTC (e.g., -120 = UTC+2)
+
+	  return {
+		device_type,
+		os,
+		browser,
+		user_agent: ua,
+		screen_resolution,
+		timezone_offset
+	  };
+	}
+
+  // ===== Init =====
+  document.addEventListener("DOMContentLoaded", function () {
+    scenarioContainer = document.getElementById("scenarioContainer");
+    resultContainer = document.getElementById("resultContainer");
+    finalContainer = document.getElementById("finalContainer");
+    actionDetails = document.getElementById("actionDetails");
+    threatSummary = document.getElementById("threatSummary");
+
+    // Restore call sign
+    const csInput = $('#callSign');
+    csInput.value = callSignValue;
+    const startBtn = $('#start-button');
+    startBtn.disabled = !csInput.value.trim();
+
+    csInput.addEventListener('input', () => {
+      const val = csInput.value.trim();
+      startBtn.disabled = !val;
+      if (val) localStorage.setItem("dfp_callsign", val);
+    });
+
+    // Start button
+    startBtn.addEventListener('click', startGame);
+
+    // Language buttons
+    $('#btnUK').addEventListener('click', () => { lang = 'uk'; applyLang(); });
+    $('#btnEN').addEventListener('click', () => { lang = 'en'; applyLang(); });
+
+    // Initial language
+    if (!I18N[lang]) lang = "uk";
+    applyLang();
+  });
+</script>
+</body>
+</html>
