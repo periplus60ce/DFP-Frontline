@@ -123,15 +123,20 @@ async function postToSheets(payload) {
 // Submit button handler with success/failure UI
 let lastAvg = null;     // final percentage (0–100)
 let lastPoints = null;  // points out of 5000
+function isValidWebhook(url){
+  // Matches typical Apps Script web app URL ending in /exec (deployment ID is the long token)
+  return /^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/.test(url);
+}
 async function submitResults() {
   const btn = document.getElementById('submitResultsBtn');
   const status = document.getElementById('submitStatus');
   if (!btn || lastAvg === null || lastPoints === null) return;
 
-  if ((WEBHOOK_URL || '').includes('AKfycbwj6EDgZMR5CY156oVuROLsXb0NRbXImRHMFrb6wlnHxKsWbhKZlS0CcqUQgI8Rfyekjw')) {
-    alert((lang === 'uk')
-      ? 'Будь ласка, вставте справжній Web App URL Apps Script у WEBHOOK_URL.'
-      : 'Please paste your real Apps Script Web App URL into WEBHOOK_URL.');
+  if (!isValidWebhook(WEBHOOK_URL)) {
+    alert(lang === 'uk'
+      ? 'WEBHOOK_URL виглядає некоректним. Переконайтеся, що це Web App URL і закінчується на /exec.'
+      : 'WEBHOOK_URL looks invalid. Ensure it is a Web App URL ending with /exec.');
+    console.warn('WEBHOOK_URL at runtime:', WEBHOOK_URL);
     return;
   }
 
@@ -968,3 +973,4 @@ async function submitResults() {
 </script>
 </body>
 </html>
+
